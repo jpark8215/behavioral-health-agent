@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Behavioral Health Session Summarization</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="{{ css_file }}" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        .transcript-container {
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            /* Replaced Tailwind @apply with standard CSS */
+            border: 1px solid #d1d5db; /* gray-300 */
+            border-radius: 0.5rem; /* rounded-lg */
+            padding: 1rem; /* p-4 */
+            transition: box-shadow 0.2s, border-color 0.2s;
+            resize: vertical;
+        }
+        .transcript-container:focus {
+            outline: none;
+            border-color: transparent;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); /* ring-2 ring-blue-500 */
+        }
+        .result-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .result-container #results {
+            overflow-y: auto;
+            flex: 1;
+            min-height: 300px;
+        }
+        .input-section, .results-section {
+            display: flex;
+            flex-direction: column;
+            min-height: 600px;
+        }
+        @media (min-width: 1024px) {
+            .input-section, .results-section {
+                min-height: calc(100vh - 250px);
+            }
+        }
+        .spinner {
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: #3b82f6;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .line-clamp-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-bold text-blue-700 mb-3">Behavioral Health Session Summarization</h1>
+            <p class="text-gray-600 max-w-2xl mx-auto">Upload or paste a therapy session transcript to generate a comprehensive summary, diagnosis, and treatment plan using AI-powered analysis.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Input Section -->
+            <div class="bg-white rounded-lg shadow-md p-6 input-section">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-800">Session Transcript</h2>
+                
+                <div class="mb-4">
+                    <label class="block text-gray-700 text-sm font-bold mb-2" for="transcript">
+                        Session Transcript
+                    </label>
+                    <div class="relative">
+                        <textarea 
+                            id="transcript" 
+                            class="w-full rounded-lg p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent transcript-container"
+                            placeholder="Paste the therapy session transcript here or upload a file below..."
+                            spellcheck="false"
+                            rows="12"></textarea>
+                        <div class="absolute top-2 right-2 text-xs text-gray-500 bg-white/80 px-2 py-1 rounded">
+                            <span id="wordCount">0</span> words
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <p class="text-sm text-gray-500 mb-2 text-center">
+                        <span class="hidden sm:inline">Or</span> drag & drop a file, or
+                        <label for="file-upload" class="relative cursor-pointer text-blue-600 hover:text-blue-500 font-medium">
+                            <span>browse files</span>
+                            <input id="file-upload" name="file-upload" type="file" class="sr-only" accept=".txt,.doc,.docx,.pdf">
+                        </label>
+                    </p>
+                    <div class="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md">
+                        <div class="space-y-1 text-center">
+                            <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                                <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <div class="flex text-sm text-gray-600">
+                                <label for="file-upload" class="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500">
+                                    <span>Upload a file</span>
+                                    <input id="file-upload" name="file-upload" type="file" class="sr-only" accept=".txt,.doc,.docx">
+                                </label>
+                                <p class="pl-1">or drag and drop</p>
+                            </div>
+                            <p class="text-xs text-gray-500">TXT, DOC, DOCX up to 10MB</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <button 
+                        id="analyzeBtn" 
+                        class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 flex items-center justify-center"
+                        onclick="analyzeTranscript()">
+                        <span id="analyzeSpinner" class="spinner hidden"></span>
+                        <span id="analyzeText">Analyze Session</span>
+                    </button>
+                    <button 
+                        id="clearBtn"
+                        class="px-4 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition duration-200"
+                        onclick="document.getElementById('transcript').value = ''; updateWordCount();">
+                        Clear
+                    </button>
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div class="bg-white rounded-lg shadow-md p-6 results-section">
+                <div class="result-container">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">Analysis Results</h2>
+                    
+                    <div id="results" class="space-y-6">
+                        <div class="text-center text-gray-500 py-16">
+                            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <p class="mt-2">Your analysis will appear here</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Session History -->
+        <div id="historySection" class="mt-12 bg-white rounded-lg shadow-md p-6 hidden">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-800">Session History</h2>
+            <div id="historyList" class="space-y-4">
+                <!-- History items will be added here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Word count functionality
+        function updateWordCount() {
+            const text = document.getElementById('transcript').value;
+            const wordCount = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+            document.getElementById('wordCount').textContent = wordCount.toLocaleString();
+        }
+
+        // Initialize word count on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            const textarea = document.getElementById('transcript');
+            textarea.addEventListener('input', updateWordCount);
+            updateWordCount();
+            
+            // Load session history if any
+            loadSessionHistory();
+        });
+
+        // Handle file upload
+        // Handle file upload
+        document.getElementById('file-upload').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            // Check file size (10MB limit)
+            if (file.size > 10 * 1024 * 1024) {
+                alert('File size exceeds 10MB limit');
+                return;
+            }
+            
+            const textarea = document.getElementById('transcript');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const analyzeText = document.getElementById('analyzeText');
+            const spinner = document.getElementById('analyzeSpinner');
+            
+            // Show loading state
+            analyzeBtn.disabled = true;
+            analyzeText.textContent = 'Processing file...';
+            spinner.classList.remove('hidden');
+            
+            try {
+                let content = '';
+                
+                if (file.name.endsWith('.txt')) {
+                    // For text files
+                    content = await file.text();
+                } else if (file.name.endsWith('.pdf')) {
+                    // For PDF files (would require a library like pdf.js)
+                    alert('PDF processing would be implemented with a library like pdf.js');
+                    throw new Error('PDF processing not implemented');
+                } else if (file.name.endsWith('.doc') || file.name.endsWith('.docx')) {
+                    // For Word documents (would require a library like mammoth.js)
+                    alert('Word document processing would be implemented with a library like mammoth.js');
+                    throw new Error('Word document processing not implemented');
+                } else {
+                    throw new Error('Unsupported file type');
+                }
+                
+                // Update the textarea with the file content
+                textarea.value = content;
+                updateWordCount();
+                
+                // Auto-scroll to show the loaded content
+                textarea.scrollTop = textarea.scrollHeight;
+                
+                // Show success message indicating content is ready for analysis
+                showNotification('File loaded successfully! Content is ready for analysis.', 'success');
+            } catch (error) {
+                console.error('Error processing file:', error);
+                alert(`Error processing file: ${error.message}`);
+            } finally {
+                // Reset button state and highlight it's ready for analysis
+                analyzeBtn.disabled = false;
+                analyzeText.textContent = 'Analyze Session';
+                spinner.classList.add('hidden');
+                
+                // Highlight the analyze button to indicate it's ready
+                analyzeBtn.classList.add('ring-2', 'ring-blue-300', 'ring-opacity-50');
+                setTimeout(() => {
+                    analyzeBtn.classList.remove('ring-2', 'ring-blue-300', 'ring-opacity-50');
+                }, 3000);
+            }
+        });
+
+        // Handle drag and drop
+        const dropArea = document.querySelector('.border-dashed');
+        
+        if (dropArea) {
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            // Highlight drop area when item is dragged over it
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropArea.addEventListener(eventName, function() {
+                    dropArea.classList.add('border-blue-500', 'bg-blue-50');
+                }, false);
+            });
+
+            // Remove highlight when item leaves drop area
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, function() {
+                    dropArea.classList.remove('border-blue-500', 'bg-blue-50');
+                }, false);
+            });
+
+            // Handle dropped files
+            dropArea.addEventListener('drop', function(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length) {
+                    document.getElementById('file-upload').files = files;
+                    const event = new Event('change', { bubbles: true });
+                    document.getElementById('file-upload').dispatchEvent(event);
+                }
+            }, false);
+            
+            // Handle paste event for pasting text directly
+            document.addEventListener('paste', function(e) {
+                const textarea = document.getElementById('transcript');
+                if (document.activeElement === textarea) return; // Skip if pasting into textarea
+                
+                const pastedText = (e.clipboardData || window.clipboardData).getData('text');
+                if (pastedText) {
+                    const currentText = textarea.value;
+                    const newText = currentText ? `${currentText}\n\n${pastedText}` : pastedText;
+                    textarea.value = newText;
+                    updateWordCount();
+                    e.preventDefault();
+                    
+                    // Auto-scroll to show the pasted content
+                    textarea.scrollTop = textarea.scrollHeight;
+                }
+            });
+        }
+
+        // Analyze transcript
+        async function analyzeTranscript() {
+            const transcript = document.getElementById('transcript').value.trim();
+            if (!transcript) {
+                alert('Please enter or upload a transcript to analyze');
+                return;
+            }
+
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const analyzeText = document.getElementById('analyzeText');
+            const spinner = document.getElementById('analyzeSpinner');
+            
+            // Update UI
+            analyzeBtn.disabled = true;
+            analyzeText.textContent = 'Analyzing...';
+            spinner.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/summarize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `transcript=${encodeURIComponent(transcript)}`
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                // Check if this is a duplicate detection response
+                if (data.is_duplicate) {
+                    // Show notification that existing analysis is being displayed
+                    showNotification('Identical content detected! Showing existing analysis instead of creating a duplicate.', 'info');
+                    displayResults(data.note, true); // Pass true to indicate this is from existing session
+                } else {
+                    // New analysis created
+                    displayResults(data.note, false); // Pass false to indicate this is a new analysis
+                }
+                
+                loadSessionHistory();
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('results').innerHTML = `
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-red-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm text-red-700">
+                                    An error occurred while processing your request. Please try again.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } finally {
+                // Reset UI
+                analyzeBtn.disabled = false;
+                analyzeText.textContent = 'Analyze Session';
+                spinner.classList.add('hidden');
+            }
+        }
+
+        // Display analysis results
+        function displayResults(note, isExistingSession = false) {
+            const resultsDiv = document.getElementById('results');
+            
+            // Escape HTML to prevent XSS
+            const escapeHtml = (text) => {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            };
+            
+            console.log('Displaying results:', note, 'isExistingSession:', isExistingSession); // Debug log
+            
+            // Format key points
+            const keyPointsHtml = note.key_points && Array.isArray(note.key_points) && note.key_points.length > 0 
+                ? `<ul class="list-disc pl-5 space-y-2">${note.key_points.map(point => `<li class="text-gray-700 leading-relaxed">${escapeHtml(point)}</li>`).join('')}</ul>`
+                : '<p class="text-gray-500 italic">No key points identified.</p>';
+            
+            // Format treatment plan with better readability
+            const formatTreatmentPlan = (items) => {
+                if (!items || !Array.isArray(items) || items.length === 0) {
+                    return '<p class="text-gray-500 italic">No treatment plan suggested.</p>';
+                }
+                
+                return items.map((item, idx) => {
+                    const escaped = escapeHtml(item);
+                    // Extract title if item starts with a pattern like "CBT:", "Therapy:", etc.
+                    const titleMatch = escaped.match(/^([^:]+):/i);
+                    
+                    if (titleMatch) {
+                        const title = titleMatch[1].trim();
+                        const content = escaped.substring(titleMatch[0].length).trim();
+                        return `
+                            <div class="bg-white p-4 rounded-lg border border-green-200 hover:border-green-400 transition-colors">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex-shrink-0 w-6 h-6 bg-green-600 text-white rounded-full flex items-center justify-center text-sm font-bold">${idx + 1}</span>
+                                    <div class="flex-1">
+                                        <h4 class="font-semibold text-green-900 mb-1">${title}</h4>
+                                        <p class="text-gray-700 text-sm leading-relaxed">${content}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        return `
+                            <div class="bg-white p-4 rounded-lg border border-green-200 hover:border-green-400 transition-colors">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex-shrink-0 w-6 h-6 bg-green-600 text-white rounded-full flex items-center justify-center text-sm font-bold">${idx + 1}</span>
+                                    <p class="text-gray-700 text-sm leading-relaxed flex-1">${escaped}</p>
+                                </div>
+                            </div>
+                        `;
+                    }
+                }).join('');
+            };
+            
+            const treatmentPlanHtml = formatTreatmentPlan(note.treatment_plan);
+            
+            // Create status indicator based on whether this is from existing session or new analysis
+            const statusIndicator = isExistingSession 
+                ? `<div class="mb-4 bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-lg">
+                     <div class="flex items-center">
+                         <svg class="h-5 w-5 text-blue-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                         </svg>
+                         <p class="text-blue-700 font-medium">Showing existing analysis - identical content was previously analyzed</p>
+                     </div>
+                   </div>`
+                : `<div class="mb-4 bg-green-50 border-l-4 border-green-400 p-4 rounded-r-lg">
+                     <div class="flex items-center">
+                         <svg class="h-5 w-5 text-green-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                         </svg>
+                         <p class="text-green-700 font-medium">New analysis completed successfully</p>
+                     </div>
+                   </div>`;
+            
+            resultsDiv.innerHTML = `
+                <div class="space-y-6">
+                    ${statusIndicator}
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-900 mb-2">Summary</h3>
+                        <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                            <p class="text-gray-700 whitespace-pre-line leading-relaxed">${escapeHtml(note.summary || 'No summary available.')}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-900 mb-2">Diagnosis</h3>
+                            <div class="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                                <p class="text-blue-900 font-medium">${escapeHtml(note.diagnosis || 'No diagnosis provided.')}</p>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-900 mb-2">Key Points</h3>
+                            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                ${keyPointsHtml}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                            <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                            </svg>
+                            Suggested Treatment Plan
+                        </h3>
+                        <div class="bg-green-50 p-4 rounded-lg border border-green-200 space-y-3">
+                            ${treatmentPlanHtml}
+                        </div>
+                    </div>
+                    
+                    <div class="pt-4 border-t border-gray-200 flex flex-wrap gap-3">
+                        <button onclick="copyToClipboard()" class="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors">
+                            <svg class="-ml-1 mr-2 h-5 w-5 text-gray-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2v-2h1a1 1 0 001-1v-2.586a1 1 0 00-.293-.707l-3.414-3.414A1 1 0 0013.586 9H13V8a1 1 0 00-1-1h-1V5a1 1 0 00-1-1H6z" />
+                                <path d="M6 10v8a2 2 0 002 2h8a2 2 0 002-2v-8a2 2 0 00-2-2H8a2 2 0 00-2 2z" />
+                            </svg>
+                            Copy to Clipboard
+                        </button>
+                        <button onclick="downloadResults()" class="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors">
+                            <svg class="-ml-1 mr-2 h-5 w-5 text-gray-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                            </svg>
+                            Download
+                        </button>
+                        <button id="reAnalyzeBtn" onclick="reAnalyzeSession()" class="inline-flex items-center px-4 py-2 border border-orange-300 shadow-sm text-sm font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 transition-colors">
+                            <span id="reAnalyzeSpinner" class="spinner hidden"></span>
+                            <svg id="reAnalyzeIcon" class="-ml-1 mr-2 h-5 w-5 text-orange-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+                            </svg>
+                            <span id="reAnalyzeText">Re-analyze</span>
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            // Scroll to results
+            resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // Copy results to clipboard
+        function copyToClipboard() {
+            const results = document.getElementById('results').innerText;
+            navigator.clipboard.writeText(results).then(() => {
+                showNotification('Copied to clipboard!', 'success');
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+                showNotification('Failed to copy to clipboard', 'error');
+            });
+        }
+        
+        // Download results as text file
+        function downloadResults() {
+            const results = document.getElementById('results').innerText;
+            const blob = new Blob([results], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `session-analysis-${new Date().toISOString().split('T')[0]}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showNotification('Download started!', 'success');
+        }
+        
+        // Show notification helper
+        function showNotification(message, type = 'success') {
+            const notification = document.createElement('div');
+            let bgColor;
+            switch(type) {
+                case 'success':
+                    bgColor = 'bg-green-500';
+                    break;
+                case 'error':
+                    bgColor = 'bg-red-500';
+                    break;
+                case 'info':
+                    bgColor = 'bg-blue-500';
+                    break;
+                default:
+                    bgColor = 'bg-green-500';
+            }
+            notification.className = `fixed bottom-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg z-50 transition-opacity`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                setTimeout(() => notification.remove(), 300);
+            }, 2000);
+        }
+
+        // Load session history
+        async function loadSessionHistory() {
+            try {
+                const response = await fetch('/api/notes');
+                if (!response.ok) throw new Error('Failed to load session history');
+                
+                const data = await response.json();
+                const historyList = document.getElementById('historyList');
+                const historySection = document.getElementById('historySection');
+                
+                if (data.sessions && data.sessions.length > 0) {
+                    historySection.classList.remove('hidden');
+                    
+                    // Filter out duplicate sessions based on content hash to ensure unique sessions only
+                    const uniqueSessions = [];
+                    const seenHashes = new Set();
+                    
+                    // Sessions are already sorted by most recent first from the API
+                    for (const session of data.sessions) {
+                        // For backward compatibility, sessions without content_hash are considered unique
+                        // Also handle null/undefined content_hash values
+                        const contentHash = session.content_hash;
+                        if (!contentHash || contentHash === '' || !seenHashes.has(contentHash)) {
+                            uniqueSessions.push(session);
+                            if (contentHash && contentHash !== '') {
+                                seenHashes.add(contentHash);
+                            }
+                        }
+                    }
+                    
+                    // Pre-define colors for consistency
+                    const colors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-yellow-500', 'bg-red-500', 'bg-teal-500'];
+                    
+                    historyList.innerHTML = uniqueSessions.map((session, index) => {
+                        const summary = session.summary || '';
+                        const displaySummary = summary.length > 100 ? summary.substring(0, 100) + '...' : summary;
+                        const colorClass = colors[index % colors.length]; // Deterministic color based on index
+                        
+                        return `
+                        <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 hover:border-blue-300 cursor-pointer transition-all" onclick="loadSession('${session.id}')">
+                            <div class="flex justify-between items-start">
+                                <div class="flex items-start gap-3 flex-1">
+                                    <span class="inline-block w-8 h-8 rounded-full ${colorClass} flex-shrink-0"></span>
+                                    <div class="flex-1 min-w-0">
+                                        <h3 class="font-semibold text-gray-900">Session ${uniqueSessions.length - index}</h3>
+                                        <p class="text-xs text-gray-500 mt-1">${formatDate(session.created_at || new Date().toISOString())}</p>
+                                        ${session.diagnosis ? `<p class="text-sm text-blue-700 mt-2 font-medium">📋 ${session.diagnosis}</p>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            ${displaySummary ? `<p class="mt-2 text-sm text-gray-600 line-clamp-2">${displaySummary}</p>` : ''}
+                        </div>
+                        `;
+                    }).join('');
+                } else {
+                    historySection.classList.add('hidden');
+                }
+            } catch (error) {
+                console.error('Error loading session history:', error);
+                showNotification('Failed to load session history', 'error');
+            }
+        }
+
+        // Load a specific session
+        async function loadSession(sessionId) {
+            try {
+                const response = await fetch(`/api/notes/${sessionId}`);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        throw new Error('Session not found');
+                    }
+                    throw new Error(`Failed to load session: ${response.status}`);
+                }
+                
+                const note = await response.json();
+                console.log('Loaded session:', note); // Debug log
+                
+                // Validate that the session has required fields
+                if (!note.id) {
+                    throw new Error('Invalid session data received');
+                }
+                
+                // Populate transcript textarea with the session's original transcript
+                const textarea = document.getElementById('transcript');
+                if (textarea) {
+                    textarea.value = note.transcript || '';
+                    updateWordCount();
+                }
+
+                // Display analysis results (this is always from existing session when loading)
+                displayResults(note, true);
+                
+                // Show notification that session was loaded
+                showNotification(`Session loaded successfully`, 'info');
+                
+                // Scroll to results
+                document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } catch (error) {
+                console.error('Error loading session:', error);
+                showNotification(`Failed to load session: ${error.message}`, 'error');
+            }
+        }
+
+        // Re-analyze current session with force flag
+        async function reAnalyzeSession() {
+            const transcript = document.getElementById('transcript').value.trim();
+            if (!transcript) {
+                showNotification('No transcript content available for re-analysis', 'error');
+                return;
+            }
+
+            const reAnalyzeBtn = document.getElementById('reAnalyzeBtn');
+            const reAnalyzeText = document.getElementById('reAnalyzeText');
+            const reAnalyzeSpinner = document.getElementById('reAnalyzeSpinner');
+            const reAnalyzeIcon = document.getElementById('reAnalyzeIcon');
+            
+            // Update UI to show loading state
+            reAnalyzeBtn.disabled = true;
+            reAnalyzeText.textContent = 'Re-analyzing...';
+            reAnalyzeSpinner.classList.remove('hidden');
+            reAnalyzeIcon.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/summarize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `transcript=${encodeURIComponent(transcript)}&force_reanalysis=true`
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                // Show notification that re-analysis was completed
+                showNotification('Re-analysis completed! New session created with updated analysis.', 'success');
+                
+                // Display the new results (this is always a new analysis when force_reanalysis=true)
+                displayResults(data.note, false);
+                
+                // Reload session history to show the new session
+                loadSessionHistory();
+            } catch (error) {
+                console.error('Error during re-analysis:', error);
+                showNotification('Failed to re-analyze session. Please try again.', 'error');
+            } finally {
+                // Reset UI
+                reAnalyzeBtn.disabled = false;
+                reAnalyzeText.textContent = 'Re-analyze';
+                reAnalyzeSpinner.classList.add('hidden');
+                reAnalyzeIcon.classList.remove('hidden');
+            }
+        }
+
+        // Format date for display
+        function formatDate(dateString) {
+            const options = { 
+                year: 'numeric', 
+                month: 'short', 
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            };
+            return new Date(dateString).toLocaleDateString(undefined, options);
+        }
+    </script>
+</body>
+</html>
