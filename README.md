@@ -244,9 +244,11 @@ behavioral-health-agent/
 
 ## Contributing
 
-* Follow security & style guidelines
-* Update documentation
-* Include tests where applicable
+Contributions are welcome! Please ensure:
+- Code passes all diagnostics
+- Documentation is updated
+- Security best practices followed
+- Tests are included where appropriate
 
 ---
 
