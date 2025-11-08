@@ -1,525 +1,658 @@
-import os
-import json
-import uuid
+"""
+Behavioral Health Session Summarization Agent
+Enhanced with proper architecture, security, and error handling
+"""
 import logging
-import hashlib
+import time
 from datetime import datetime
-from typing import List, Dict, Optional, Any
-from functools import lru_cache
+from typing import Optional
 
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, Form, Request, status
+from fastapi import FastAPI, HTTPException, Form, Request, File, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse
 from fastapi.exceptions import RequestValidationError
-import requests
+from fastapi.security import HTTPBearer
+
+# Import improved components
+from config import settings
+from models.schemas import (
+    TranscriptRequest, AnalysisResponse, SessionNote, 
+    AudioUploadResponse, HealthCheckResponse, ErrorResponse
+)
+from core.exceptions import (
+    validation_error, processing_error, service_unavailable_error,
+    not_found_error, internal_server_error
+)
+from core.security import AuditLogger, DataSanitizer, ContentValidator
+from services.analysis_service import analysis_service
+from services.audio_service import audio_service
+from database.postgres_client import get_postgres_client
+import hashlib
+import json
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=getattr(logging, settings.log_level),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-
-# Initialize FastAPI app
+# Initialize FastAPI app with enhanced configuration
 app = FastAPI(
-    title="Behavioral Health Session Summarization Agent",
-    description="An AI-powered tool for summarizing behavioral health sessions",
-    version="1.0.0",
+    title=settings.app_name,
+    description="Enhanced AI-powered tool for behavioral health session analysis",
+    version=settings.app_version,
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
+    responses={
+        400: {"model": ErrorResponse, "description": "Validation Error"},
+        404: {"model": ErrorResponse, "description": "Not Found"},
+        422: {"model": ErrorResponse, "description": "Processing Error"},
+        500: {"model": ErrorResponse, "description": "Internal Server Error"},
+        503: {"model": ErrorResponse, "description": "Service Unavailable"},
+    }
 )
 
-# Create necessary directories
-os.makedirs("static/uploads", exist_ok=True)
-os.makedirs("data/sessions", exist_ok=True)
+# Security
+security = HTTPBearer(auto_error=False)
 
-# Mount static files
+# CORS middleware
+if settings.enable_cors:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["*"],
+    )
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests with timing and security info"""
+    start_time = time.time()
+    client_ip = get_client_ip(request)
+    
+    # Log request
+    logger.info(f"Request: {request.method} {request.url.path} from {client_ip}")
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Log response
+    process_time = time.time() - start_time
+    logger.info(
+        f"Response: {response.status_code} for {request.method} {request.url.path} "
+        f"in {process_time:.3f}s"
+    )
+    
+    # Add security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    
+    return response
+
+# Static files and templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Setup templates
 templates = Jinja2Templates(directory="templates")
 
-# Add CORS middleware (configure according to your needs)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Database client
+db_client = None
 
-# Ollama configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "granite3.3:8b")
-
-# Cache Ollama connection status for 30 seconds
-_ollama_connection_cache = {"status": None, "timestamp": 0}
-
-def check_ollama_connection() -> bool:
-    """Check if Ollama is running and accessible (with caching)."""
-    import time
-    current_time = time.time()
-    
-    # Return cached result if less than 30 seconds old
-    if current_time - _ollama_connection_cache["timestamp"] < 30:
-        if _ollama_connection_cache["status"] is not None:
-            return _ollama_connection_cache["status"]
-    
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    global db_client
     try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-        status = response.status_code == 200
-        _ollama_connection_cache["status"] = status
-        _ollama_connection_cache["timestamp"] = current_time
-        return status
-    except Exception as e:
-        logger.error(f"Cannot connect to Ollama: {e}")
-        _ollama_connection_cache["status"] = False
-        _ollama_connection_cache["timestamp"] = current_time
-        return False
-
-class SessionNote(BaseModel):
-    """Model for storing session notes and summaries"""
-    id: str = Field(default_factory=lambda: f"session_{uuid.uuid4().hex[:8]}")
-    content_hash: str = Field(..., description="Hash of transcript content for duplicate detection")
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-    transcript: str = Field(..., description="The raw transcript of the session")
-    summary: str = Field(..., description="The generated summary of the session")
-    diagnosis: str = Field(..., description="The suggested diagnosis based on the session")
-    key_points: List[str] = Field(default_factory=list, description="Key points from the session")
-    treatment_plan: List[str] = Field(default_factory=list, description="Suggested treatment plan")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-        }
-
-# In-memory storage (replace with a database in production)
-session_notes: Dict[str, SessionNote] = {}
-
-# Load existing sessions from disk
-SESSIONS_FILE = os.getenv("SESSIONS_FILE", "data/sessions/sessions.json")
-
-def generate_content_hash(transcript: str) -> str:
-    """Generate a hash of the transcript content for duplicate detection."""
-    # Normalize content by stripping whitespace and converting to lowercase
-    normalized_content = transcript.strip().lower()
-    # Generate MD5 hash
-    return hashlib.md5(normalized_content.encode('utf-8')).hexdigest()
-
-def load_sessions() -> Dict[str, SessionNote]:
-    """Load sessions from disk."""
-    try:
-        if os.path.exists(SESSIONS_FILE):
-            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
-                sessions_data = json.load(f)
-                loaded_sessions = {}
-                for sid, data in sessions_data.items():
-                    # Handle backward compatibility for sessions without content_hash
-                    if 'content_hash' not in data:
-                        data['content_hash'] = generate_content_hash(data.get('transcript', ''))
-                    loaded_sessions[sid] = SessionNote(**data)
-                return loaded_sessions
-    except Exception as e:
-        logger.error(f"Error loading sessions: {e}")
-    return {}
-
-def save_sessions():
-    """Save sessions to disk."""
-    try:
-        os.makedirs(os.path.dirname(SESSIONS_FILE), exist_ok=True)
-        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                {sid: note.dict() for sid, note in session_notes.items()},
-                f,
-                indent=2,
-                default=str,
-                ensure_ascii=False
-            )
-    except Exception as e:
-        logger.error(f"Error saving sessions: {e}")
-
-# Load existing sessions on startup
-session_notes = load_sessions()
-
-# Load existing sessions on startup
-def _parse_json_safely(text: str) -> Dict[str, Any]:
-    """Try to parse JSON; if it fails, attempt to extract the first JSON object block."""
-    if not text or not isinstance(text, str):
-        return {}
-    
-    text = text.strip()
-    
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to extract the largest {...} block
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    
-    # As a last resort, return empty dict
-    logger.warning(f"Failed to parse JSON from text: {text[:100]}...")
-    return {}
-
-def generate_session_summary(transcript: str) -> dict:
-    """Generate a summary, diagnosis, and treatment plan using Ollama with Granite 3.3."""
-    try:
-        # Check if using dummy mode
-        use_dummy = os.getenv("USE_DUMMY_LLM", "false").lower() == "true"
-        if use_dummy:
-            dummy_json = {
-                "summary": "Patient discussed ongoing stressors and coping strategies.",
-                "diagnosis": "Adjustment disorder (provisional)",
-                "key_points": [
-                    "Stress related to work performance",
-                    "Sleep disturbances reported",
-                    "Interest in CBT techniques"
-                ],
-                "treatment_plan": [
-                    "Cognitive Behavioral Therapy (CBT): Weekly 50-minute sessions for 12 weeks focusing on identifying and restructuring maladaptive thought patterns related to work performance. Implement thought records 3x/week to track automatic thoughts, emotions, and behavioral responses.",
-                    "Sleep Hygiene Protocol: Establish consistent sleep-wake schedule (10:30 PM - 6:30 AM). Implement stimulus control techniques including 20-minute rule for sleep onset. Track sleep quality using daily sleep diary. Goal: Achieve 7-8 hours of consolidated sleep within 4 weeks.",
-                    "Behavioral Activation: Schedule 3 pleasurable activities per week to counter avoidance patterns. Use activity monitoring log to track engagement and mood correlation. Measurable outcome: Increase in positive affect ratings by 30% within 6 weeks.",
-                    "Stress Management Skills: Practice progressive muscle relaxation (PMR) daily for 15 minutes. Introduce diaphragmatic breathing exercises for acute stress episodes. Goal: Reduce subjective stress ratings from 8/10 to 5/10 or below within 8 weeks.",
-                    "Homework Assignments: Complete weekly thought records, maintain sleep diary, practice relaxation techniques daily, and engage in scheduled behavioral activation activities. Review progress in each session.",
-                    "Outcome Measures: Administer GAD-7 and PHQ-9 at baseline, week 6, and week 12 to track symptom reduction. Target: 50% reduction in anxiety and depression scores by end of treatment.",
-                    "Adjunct Recommendations: Consider psychiatric consultation if symptoms do not improve by week 6 for medication evaluation. Provide psychoeducation materials on stress management and cognitive distortions."
-                ]
-            }
-            return dummy_json
+        db_client = get_postgres_client()
+        await db_client.connect()
+        logger.info("Application startup completed successfully")
         
-        # Check Ollama connection
-        if not check_ollama_connection():
-            raise HTTPException(
-                status_code=503,
-                detail="Cannot connect to Ollama. Please ensure Ollama is running with 'ollama serve'"
-            )
+        AuditLogger.log_data_processing(
+            operation="application_startup",
+            data_type="system",
+            success=True
+        )
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        AuditLogger.log_data_processing(
+            operation="application_startup",
+            data_type="system",
+            success=False,
+            error_message=str(e)
+        )
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("Application shutdown initiated")
+    AuditLogger.log_data_processing(
+        operation="application_shutdown",
+        data_type="system",
+        success=True
+    )
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address"""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+@app.post("/api/summarize", response_model=AnalysisResponse)
+async def analyze_transcript(
+    request: Request,
+    transcript: str = Form(..., min_length=10, max_length=50000),
+    metadata: Optional[str] = Form(None),
+    force_reanalysis: bool = Form(False)
+):
+    """
+    Analyze therapy session transcript with enhanced validation and security
+    """
+    start_time = time.time()
+    client_ip = get_client_ip(request)
+    
+    try:
+        # Validate database connection
+        if not db_client:
+            raise service_unavailable_error("Database")
         
-        system_message = (
-            "You are a behavioral health counselor. Return ONLY valid JSON with keys: "
-            "summary (string), diagnosis (string), key_points (array of 3-5 strings), treatment_plan (array of 4-6 strings).\n\n"
-            "Treatment plan format: 'Title: Brief description with specific technique, frequency, and goal.'\n"
-            "Example: 'CBT Sessions: Weekly 50-min sessions for 12 weeks. Use thought records 3x/week. Goal: 50% symptom reduction.'\n"
-            "Keep each item under 200 characters. Be specific and actionable."
+        # Validate and sanitize transcript
+        is_valid, error_msg = ContentValidator.validate_transcript(transcript)
+        if not is_valid:
+            raise validation_error(error_msg)
+        
+        # Parse and validate metadata
+        note_metadata = {}
+        if metadata:
+            try:
+                import json
+                note_metadata = json.loads(metadata)
+                is_valid, error_msg = ContentValidator.validate_metadata(note_metadata)
+                if not is_valid:
+                    raise validation_error(f"Invalid metadata: {error_msg}")
+            except json.JSONDecodeError:
+                raise validation_error("Invalid metadata format. Must be valid JSON.")
+        
+        # Generate content hash for duplicate detection
+        content_hash = hashlib.sha256(transcript.encode()).hexdigest()
+        
+        # Check for duplicates unless forced
+        if not force_reanalysis:
+            existing_session = await db_client.check_duplicate_by_hash(content_hash)
+            if existing_session:
+                AuditLogger.log_session_access(
+                    session_id=existing_session["id"],
+                    action="duplicate_detected",
+                    ip_address=client_ip
+                )
+                
+                return AnalysisResponse(
+                    session_id=existing_session["id"],
+                    note=SessionNote(**existing_session),
+                    is_duplicate=True
+                )
+        
+        # Perform clinical analysis with reanalysis option
+        analysis = await analysis_service.analyze_session(
+            transcript, 
+            use_external_llm=True,
+            force_reanalysis=force_reanalysis
         )
         
-        user_message = f"Transcript:\n{transcript[:2000]}\n\nProvide concise JSON analysis."
-        
-        # Call Ollama API
-        payload = {
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.3,
-                "num_predict": 1024,  # Reduced for faster generation
-                "num_ctx": 2048,  # Reduced context window
-                "top_p": 0.9,
-                "top_k": 40
-            }
+        # Create session data
+        session_data = {
+            "content_hash": content_hash,
+            "transcript": transcript,
+            "summary": analysis.summary,
+            "diagnosis": analysis.diagnosis,
+            "key_points": analysis.key_points,
+            "treatment_plan": analysis.treatment_plan,
+            "metadata": note_metadata,
+            "processing_status": "completed"
         }
         
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=120,  
-            headers={"Content-Type": "application/json"}
+        # Store in database
+        created_session = await db_client.create_session(session_data)
+        
+        # Log successful analysis
+        processing_time = int((time.time() - start_time) * 1000)
+        AuditLogger.log_session_access(
+            session_id=created_session["id"],
+            action="created",
+            ip_address=client_ip
         )
         
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Ollama API error: {response.text}"
-            )
+        return AnalysisResponse(
+            session_id=created_session["id"],
+            note=SessionNote(**created_session),
+            is_duplicate=False,
+            processing_time_ms=processing_time
+        )
         
-        result = response.json()
-        text = result.get("message", {}).get("content", "{}")
-        parsed = _parse_json_safely(text)
-
-        # Fill with defaults if missing
-        summary = parsed.get("summary") or ""
-        diagnosis = parsed.get("diagnosis") or ""
-        key_points = parsed.get("key_points") or []
-        treatment_plan = parsed.get("treatment_plan") or []
-
-        # Coerce types
-        if not isinstance(key_points, list):
-            key_points = [str(key_points)]
-        if not isinstance(treatment_plan, list):
-            treatment_plan = [str(treatment_plan)]
-
-        return {
-            "summary": str(summary),
-            "diagnosis": str(diagnosis),
-            "key_points": [str(x) for x in key_points],
-            "treatment_plan": [str(x) for x in treatment_plan],
-        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Ollama inference error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error generating summary: {str(e)}")
+        logger.error(f"Error in analyze_transcript: {str(e)}", exc_info=True)
+        AuditLogger.log_security_event(
+            event_type="analysis_error",
+            severity="medium",
+            description=f"Analysis failed: {str(e)}",
+            ip_address=client_ip
+        )
+        raise internal_server_error("Analysis processing failed")
 
-@app.post("/api/summarize")
-async def summarize_session(
-    transcript: str = Form(..., min_length=10, description="The session transcript to analyze"),
-    metadata: Optional[str] = Form(None, description="Optional metadata in JSON format"),
-    force_reanalysis: bool = Form(False, description="Force re-analysis even if duplicate content exists")
+@app.get("/api/health", response_model=HealthCheckResponse)
+async def enhanced_health_check():
+    """Comprehensive health check with detailed service status"""
+    try:
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow(),
+            "version": settings.app_version,
+            "environment": settings.environment
+        }
+        
+        # Check database
+        if db_client:
+            try:
+                await db_client.connect()
+                health_status["database_status"] = "connected"
+            except Exception as e:
+                health_status["database_status"] = f"error: {str(e)}"
+                health_status["status"] = "degraded"
+        else:
+            health_status["database_status"] = "not_configured"
+            health_status["status"] = "degraded"
+        
+        # Check Ollama service
+        try:
+            ollama_health = await analysis_service.ollama_service.health_check()
+            health_status["ollama_service"] = ollama_health
+            if ollama_health.get("status") != "healthy":
+                # Ollama issues don't degrade overall status since we have fallback
+                pass
+        except Exception as e:
+            health_status["ollama_service"] = {"status": "error", "error": str(e)}
+        
+        # Check audio service
+        try:
+            audio_health = await audio_service.health_check()
+            health_status["audio_service"] = audio_health
+            if not audio_health.get("whisper_available", False):
+                health_status["status"] = "degraded"
+        except Exception as e:
+            health_status["audio_service"] = {"status": "error", "error": str(e)}
+            health_status["status"] = "degraded"
+        
+        return HealthCheckResponse(**health_status)
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return HealthCheckResponse(
+            status="unhealthy",
+            timestamp=datetime.utcnow(),
+            version=settings.app_version,
+            environment=settings.environment,
+            database_status="error",
+            error=str(e)
+        )
+
+@app.post("/api/upload-audio", response_model=AudioUploadResponse)
+async def upload_audio(
+    request: Request,
+    audio_file: UploadFile = File(...),
+    metadata: Optional[str] = Form(None)
 ):
     """
-    Submit a session transcript and receive a summary, diagnosis, and treatment plan.
-    
-    - **transcript**: The session transcript text (minimum 10 characters)
-    - **metadata**: Optional JSON string with additional metadata (e.g., patient ID, session date)
-    - **force_reanalysis**: Force re-analysis even if duplicate content exists
+    Upload and transcribe audio file with enhanced validation
     """
+    start_time = time.time()
+    client_ip = get_client_ip(request)
+    
     try:
+        # Validate file
+        is_valid, error_msg = ContentValidator.validate_audio_file(audio_file)
+        if not is_valid:
+            raise validation_error(error_msg)
+        
         # Parse metadata if provided
         note_metadata = {}
         if metadata:
             try:
                 note_metadata = json.loads(metadata)
+                is_valid, error_msg = ContentValidator.validate_metadata(note_metadata)
+                if not is_valid:
+                    raise validation_error(f"Invalid metadata: {error_msg}")
             except json.JSONDecodeError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid metadata format. Must be valid JSON."
-                )
+                raise validation_error("Invalid metadata format. Must be valid JSON.")
         
-        # Generate content hash for duplicate detection
-        content_hash = generate_content_hash(transcript)
+        # Process audio file
+        audio_content = await audio_file.read()
         
-        # Check for existing session with same content hash unless forced
-        if not force_reanalysis:
-            for session_id, session in session_notes.items():
-                if hasattr(session, 'content_hash') and session.content_hash == content_hash:
-                    return {
-                        "session_id": session_id,
-                        "note": jsonable_encoder(session),
-                        "is_duplicate": True
-                    }
-        
-        # Generate the summary and analysis
-        analysis = generate_session_summary(transcript)
-        
-        # Create a new session note
-        note = SessionNote(
-            content_hash=content_hash,
-            transcript=transcript,
-            summary=analysis.get("summary", ""),
-            diagnosis=analysis.get("diagnosis", ""),
-            key_points=analysis.get("key_points", []),
-            treatment_plan=analysis.get("treatment_plan", []),
-            metadata=note_metadata
+        # Transcribe audio
+        transcription_result = await audio_service.transcribe_audio(
+            audio_content, 
+            audio_file.filename
         )
         
-        # Store the note
-        session_notes[note.id] = note
-        save_sessions()
+        if not transcription_result.get("success"):
+            raise processing_error(
+                "Audio transcription failed",
+                details=transcription_result.get("error")
+            )
         
-        return {
-            "session_id": note.id,
-            "note": jsonable_encoder(note),
-            "is_duplicate": False
+        transcript = transcription_result["transcript"]
+        
+        # Validate transcript length
+        if len(transcript.strip()) < 10:
+            raise validation_error("Transcribed content too short for analysis")
+        
+        # Generate analysis (always use LLM for audio uploads)
+        analysis = await analysis_service.analyze_session(
+            transcript,
+            use_external_llm=True,
+            force_reanalysis=False
+        )
+        
+        # Create session data
+        content_hash = hashlib.sha256(transcript.encode()).hexdigest()
+        session_data = {
+            "content_hash": content_hash,
+            "transcript": transcript,
+            "summary": analysis.summary,
+            "diagnosis": analysis.diagnosis,
+            "key_points": analysis.key_points,
+            "treatment_plan": analysis.treatment_plan,
+            "metadata": {
+                **note_metadata,
+                "audio_filename": audio_file.filename,
+                "audio_size": len(audio_content),
+                "transcription_confidence": transcription_result.get("confidence", 0.0)
+            },
+            "processing_status": "completed"
         }
+        
+        # Store in database
+        created_session = await db_client.create_session(session_data)
+        
+        # Log successful processing
+        processing_time = int((time.time() - start_time) * 1000)
+        AuditLogger.log_data_processing(
+            operation="audio_upload_transcription",
+            data_type="audio",
+            success=True,
+            session_id=created_session["id"]
+        )
+        
+        return AudioUploadResponse(
+            session_id=created_session["id"],
+            transcript=transcript,
+            note=SessionNote(**created_session),
+            processing_time_ms=processing_time,
+            transcription_confidence=transcription_result.get("confidence", 0.0)
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in summarize_session: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while processing your request: {str(e)}"
+        logger.error(f"Error in upload_audio: {str(e)}", exc_info=True)
+        AuditLogger.log_data_processing(
+            operation="audio_upload_transcription",
+            data_type="audio",
+            success=False,
+            error_message=str(e)
         )
+        raise internal_server_error("Audio processing failed")
 
-@app.get("/api/notes/{session_id}", response_model=SessionNote)
-async def get_session_note(session_id: str):
-    """
-    Retrieve a session note by ID.
-    
-    - **session_id**: The ID of the session to retrieve
-    """
-    if session_id not in session_notes:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session with ID '{session_id}' not found"
-        )
-    return session_notes[session_id]
-
-@app.get("/api/notes")
-async def list_session_notes(
-    skip: int = 0,
-    limit: int = 100,
-    sort_by: str = "-created_at"
+@app.get("/api/sessions/{session_id}")
+async def get_session(
+    request: Request,
+    session_id: str
 ):
     """
-    List all session notes with pagination and sorting.
-    
-    - **skip**: Number of items to skip (for pagination)
-    - **limit**: Maximum number of items to return (for pagination)
-    - **sort_by**: Field to sort by (prefix with - for descending order)
+    Retrieve session by ID with audit logging
     """
+    client_ip = get_client_ip(request)
+    
     try:
-        # Validate pagination parameters
-        skip = max(0, skip)
-        limit = min(max(1, limit), 1000)  # Cap at 1000
+        if not db_client:
+            raise service_unavailable_error("Database")
         
-        # Convert to list for sorting (only include necessary fields for performance)
-        notes_list = [
-            {
-                "id": sid,
-                "created_at": note.created_at,
-                "updated_at": note.updated_at,
-                "summary": note.summary[:200] if note.summary else "",  # Truncate for list view
-                "diagnosis": note.diagnosis,
-                "content_hash": getattr(note, 'content_hash', None)  # Include content_hash for duplicate detection
-            }
-            for sid, note in session_notes.items()
-        ]
+        session = await db_client.get_session(session_id)
+        if not session:
+            raise not_found_error("Session", str(session_id))
         
-        # Sort the notes
-        reverse_sort = sort_by.startswith('-')
-        sort_field = sort_by[1:] if reverse_sort else sort_by
-        
-        # Handle nested fields and missing keys
-        def get_sort_key(item):
-            keys = sort_field.split('.')
-            value = item
-            for key in keys:
-                value = value.get(key, '')
-                if value is None:
-                    return ''
-            return value
-        
-        notes_list.sort(
-            key=get_sort_key,
-            reverse=reverse_sort
+        AuditLogger.log_session_access(
+            session_id=session_id,
+            action="retrieved",
+            ip_address=client_ip
         )
         
-        # Apply pagination
-        total = len(notes_list)
-        paginated_notes = notes_list[skip:skip + limit]
+        return session
         
-        return {
-            "sessions": paginated_notes,
-            "total": total,
-            "skip": skip,
-            "limit": limit,
-            "has_more": skip + limit < total
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving session {session_id}: {str(e)}", exc_info=True)
+        AuditLogger.log_security_event(
+            event_type="session_access_error",
+            severity="medium",
+            description=f"Failed to retrieve session {session_id}",
+            ip_address=client_ip
+        )
+        raise internal_server_error("Session retrieval failed")
+
+@app.post("/api/sessions/{session_id}/reanalyze", response_model=AnalysisResponse)
+async def reanalyze_session(
+    request: Request,
+    session_id: str,
+    use_external_llm: bool = Form(True)
+):
+    """
+    Reanalyze an existing session with fresh analysis
+    Useful when Ollama was unavailable or for getting updated analysis
+    """
+    start_time = time.time()
+    client_ip = get_client_ip(request)
+    
+    try:
+        if not db_client:
+            raise service_unavailable_error("Database")
+        
+        # Get existing session
+        session = await db_client.get_session(session_id)
+        if not session:
+            raise not_found_error("Session", str(session_id))
+        
+        transcript = session.get("transcript")
+        if not transcript:
+            raise validation_error("Session has no transcript to reanalyze")
+        
+        # Perform fresh analysis
+        analysis = await analysis_service.analyze_session(
+            transcript,
+            use_external_llm=use_external_llm,
+            force_reanalysis=True
+        )
+        
+        # Update session with new analysis
+        update_data = {
+            "summary": analysis.summary,
+            "diagnosis": analysis.diagnosis,
+            "key_points": analysis.key_points,
+            "treatment_plan": analysis.treatment_plan,
+            "processing_status": "reanalyzed"
         }
         
-    except Exception as e:
-        logger.error(f"Error listing sessions: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while retrieving session notes"
+        updated_session = await db_client.update_session(session_id, update_data)
+        
+        # Log reanalysis
+        processing_time = int((time.time() - start_time) * 1000)
+        AuditLogger.log_session_access(
+            session_id=session_id,
+            action="reanalyzed",
+            ip_address=client_ip
         )
+        
+        return AnalysisResponse(
+            session_id=session_id,
+            note=SessionNote(**updated_session),
+            is_duplicate=False,
+            processing_time_ms=processing_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reanalyzing session {session_id}: {str(e)}", exc_info=True)
+        AuditLogger.log_security_event(
+            event_type="reanalysis_error",
+            severity="medium",
+            description=f"Reanalysis failed for session {session_id}",
+            ip_address=client_ip
+        )
+        raise internal_server_error("Reanalysis failed")
+
+@app.get("/api/sessions")
+async def list_sessions(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    List recent sessions with pagination
+    """
+    client_ip = get_client_ip(request)
+    
+    try:
+        if not db_client:
+            raise service_unavailable_error("Database")
+        
+        # Validate pagination parameters
+        if limit < 1 or limit > 100:
+            raise validation_error("Limit must be between 1 and 100")
+        if offset < 0:
+            raise validation_error("Offset must be non-negative")
+        
+        result = await db_client.list_sessions(skip=offset, limit=limit)
+        
+        AuditLogger.log_data_processing(
+            operation="sessions_list",
+            data_type="session_metadata",
+            success=True
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing sessions: {str(e)}")
+        AuditLogger.log_security_event(
+            event_type="sessions_list_error",
+            severity="medium",
+            description="Failed to list sessions",
+            ip_address=client_ip
+        )
+        raise internal_server_error("Sessions listing failed")
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    """Serve the main application page."""
-    return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "css_file": "/static/styles.css",
-            "app_name": "Behavioral Health Summarizer",
-            "version": "1.0.0",
-            "environment": os.getenv("ENVIRONMENT", "development"),
-            "max_file_size_mb": 10
-        },
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-    )
-
-# Custom exception handlers
-@app.exception_handler(404)
-async def not_found_exception_handler(request: Request, exc: HTTPException):
-    if request.url.path.startswith("/api/"):
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"detail": exc.detail if hasattr(exc, 'detail') else "Not Found"},
+async def web_interface(request: Request):
+    """
+    Serve the main web interface
+    """
+    try:
+        return templates.TemplateResponse(
+            "index.html", 
+            {
+                "request": request,
+                "app_name": settings.app_name,
+                "version": settings.app_version
+            }
         )
-    return templates.TemplateResponse(
-        "404.html",
-        {"request": request},
-        status_code=404
+    except Exception as e:
+        logger.error(f"Error serving web interface: {str(e)}")
+        raise internal_server_error("Web interface unavailable")
+
+@app.get("/sessions/{session_id}", response_class=HTMLResponse)
+async def view_session(request: Request, session_id: int):
+    """
+    Serve session view page
+    """
+    try:
+        return templates.TemplateResponse(
+            "session.html",
+            {
+                "request": request,
+                "session_id": session_id,
+                "app_name": settings.app_name
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error serving session view: {str(e)}")
+        raise internal_server_error("Session view unavailable")
+
+# Error handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors with sanitized responses"""
+    client_ip = get_client_ip(request)
+    
+    AuditLogger.log_security_event(
+        event_type="validation_error",
+        severity="low",
+        description="Request validation failed",
+        ip_address=client_ip,
+        additional_data={"errors": exc.errors()}
+    )
+    
+    from fastapi.responses import JSONResponse
+    error = validation_error(
+        message="Request validation failed",
+        details={"validation_errors": exc.errors()}
+    )
+    return JSONResponse(
+        status_code=error.status_code,
+        content=error.detail
     )
 
 @app.exception_handler(500)
-async def server_error_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Server error: {exc}", exc_info=True)
-    if request.url.path.startswith("/api/"):
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
-    return templates.TemplateResponse(
-        "500.html",
-        {"request": request},
-        status_code=500
+async def internal_server_error_handler(request: Request, exc: Exception):
+    """Handle internal server errors with sanitized responses"""
+    client_ip = get_client_ip(request)
+    
+    logger.error(f"Internal server error: {exc}", exc_info=True)
+    AuditLogger.log_security_event(
+        event_type="internal_error",
+        severity="high",
+        description="Internal server error occurred",
+        ip_address=client_ip
     )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.error(f"Validation error: {exc}")
+    
+    from fastapi.responses import JSONResponse
+    # Don't expose internal error details in production
+    if settings.environment == "production":
+        error = internal_server_error("An internal error occurred")
+    else:
+        error = internal_server_error(f"Internal error: {str(exc)}")
+    
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": jsonable_encoder(exc.errors())},
+        status_code=error.status_code,
+        content=error.detail
     )
-
-# Health check endpoint
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint for monitoring."""
-    ollama_status = "connected" if check_ollama_connection() else "disconnected"
-    return {
-        "status": "ok",
-        "version": "1.0.0",
-        "environment": os.getenv("ENVIRONMENT", "development"),
-        "sessions_count": len(session_notes),
-        "ollama_status": ollama_status,
-        "ollama_model": OLLAMA_MODEL
-    }
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Get port from environment variable or use default
-    port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "0.0.0.0")
-    
-    # Configure logging
-    log_config = uvicorn.config.LOGGING_CONFIG
-    log_config["formatters"]["default"]["fmt"] = "%(asctime)s [%(name)s] %(levelprefix)s %(message)s"
-    log_config["formatters"]["access"]["fmt"] = '%(asctime)s [%(name)s] %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
-    
-    # Run the application
     uvicorn.run(
         "main:app",
-        host=host,
-        port=port,
-        reload=os.getenv("ENVIRONMENT") == "development",
-        log_config=log_config,
-        proxy_headers=True,
-        forwarded_allow_ips="*"
+        host=settings.host,
+        port=settings.port,
+        reload=settings.environment == "development",
+        log_level=settings.log_level.lower()
     )

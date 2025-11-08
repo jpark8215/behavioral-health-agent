@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Behavioral Health Session Summarization</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="{{ css_file }}" rel="stylesheet">
@@ -90,11 +93,74 @@
                         <textarea 
                             id="transcript" 
                             class="w-full rounded-lg p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent transcript-container"
-                            placeholder="Paste the therapy session transcript here or upload a file below..."
+                            placeholder="Paste the therapy session transcript here, record audio, or upload a file below..."
                             spellcheck="false"
                             rows="12"></textarea>
                         <div class="absolute top-2 right-2 text-xs text-gray-500 bg-white/80 px-2 py-1 rounded">
                             <span id="wordCount">0</span> words
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audio Recording Section -->
+                <div class="mb-4">
+                    <div class="flex flex-col sm:flex-row gap-3 mb-4">
+                        <button 
+                            id="recordBtn" 
+                            class="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 flex items-center justify-center"
+                            onclick="toggleRecording()">
+                            <span id="recordSpinner" class="spinner hidden"></span>
+                            <svg id="recordIcon" class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>
+                            </svg>
+                            <span id="recordText">Start Recording</span>
+                        </button>
+                        <button 
+                            id="uploadAudioBtn"
+                            class="px-4 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition duration-200 flex items-center justify-center"
+                            onclick="document.getElementById('audio-upload').click();">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                            </svg>
+                            Upload Audio
+                        </button>
+                        <input id="audio-upload" type="file" class="hidden" accept="audio/*" onchange="handleAudioUpload(event)">
+                    </div>
+                    
+                    <!-- Recording Status -->
+                    <div id="recordingStatus" class="hidden bg-red-50 border-l-4 border-red-400 p-4 rounded-r-lg mb-4">
+                        <div class="flex items-center">
+                            <div class="animate-pulse w-3 h-3 bg-red-500 rounded-full mr-2"></div>
+                            <p class="text-red-700 font-medium">Recording in progress... <span id="recordingTime">00:00</span></p>
+                        </div>
+                    </div>
+                    
+                    <!-- Audio Player -->
+                    <div id="audioPlayerSection" class="hidden bg-gray-50 p-4 rounded-lg border border-gray-200 mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <h4 class="font-medium text-gray-900">Recorded Audio</h4>
+                            <button onclick="clearRecording()" class="text-red-600 hover:text-red-800 text-sm">
+                                Clear Recording
+                            </button>
+                        </div>
+                        <audio id="audioPlayer" controls class="w-full">
+                            Your browser does not support the audio element.
+                        </audio>
+                        <div class="mt-2 flex gap-2">
+                            <button 
+                                id="transcribeBtn"
+                                onclick="transcribeAudio()"
+                                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm transition duration-200">
+                                <span id="transcribeSpinner" class="spinner hidden"></span>
+                                <span id="transcribeText">Transcribe Audio</span>
+                            </button>
+                            <button 
+                                id="transcribeAnalyzeBtn"
+                                onclick="transcribeAndAnalyze()"
+                                class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm transition duration-200">
+                                <span id="transcribeAnalyzeSpinner" class="spinner hidden"></span>
+                                <span id="transcribeAnalyzeText">Transcribe & Analyze</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -175,6 +241,13 @@
             document.getElementById('wordCount').textContent = wordCount.toLocaleString();
         }
 
+        // Audio recording variables
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let recordingStartTime = null;
+        let recordingTimer = null;
+        let currentAudioBlob = null;
+
         // Initialize word count on page load
         document.addEventListener('DOMContentLoaded', () => {
             const textarea = document.getElementById('transcript');
@@ -183,6 +256,12 @@
             
             // Load session history if any
             loadSessionHistory();
+            
+            // Check for audio recording support
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                document.getElementById('recordBtn').disabled = true;
+                document.getElementById('recordBtn').innerHTML = '<span class="text-gray-500">Recording not supported</span>';
+            }
         });
 
         // Handle file upload
@@ -580,7 +659,7 @@
         // Load session history
         async function loadSessionHistory() {
             try {
-                const response = await fetch('/api/notes');
+                const response = await fetch('/api/sessions?limit=10');
                 if (!response.ok) throw new Error('Failed to load session history');
                 
                 const data = await response.json();
@@ -643,7 +722,7 @@
         // Load a specific session
         async function loadSession(sessionId) {
             try {
-                const response = await fetch(`/api/notes/${sessionId}`);
+                const response = await fetch(`/api/sessions/${sessionId}`);
                 if (!response.ok) {
                     if (response.status === 404) {
                         throw new Error('Session not found');
@@ -744,6 +823,244 @@
                 minute: '2-digit'
             };
             return new Date(dateString).toLocaleDateString(undefined, options);
+        }
+
+        // Audio Recording Functions
+        async function toggleRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 44100
+                    } 
+                });
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    currentAudioBlob = audioBlob;
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    
+                    const audioPlayer = document.getElementById('audioPlayer');
+                    audioPlayer.src = audioUrl;
+                    
+                    document.getElementById('audioPlayerSection').classList.remove('hidden');
+                    
+                    // Stop all tracks to release microphone
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                recordingStartTime = Date.now();
+                
+                // Update UI
+                updateRecordingUI(true);
+                
+                // Start timer
+                recordingTimer = setInterval(updateRecordingTime, 1000);
+                
+                showNotification('Recording started', 'info');
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                showNotification('Failed to start recording. Please check microphone permissions.', 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                clearInterval(recordingTimer);
+                updateRecordingUI(false);
+                showNotification('Recording stopped', 'info');
+            }
+        }
+
+        function updateRecordingUI(isRecording) {
+            const recordBtn = document.getElementById('recordBtn');
+            const recordText = document.getElementById('recordText');
+            const recordIcon = document.getElementById('recordIcon');
+            const recordingStatus = document.getElementById('recordingStatus');
+            
+            if (isRecording) {
+                recordBtn.className = 'flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 flex items-center justify-center';
+                recordText.textContent = 'Stop Recording';
+                recordIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10h6v4H9z"></path>';
+                recordingStatus.classList.remove('hidden');
+            } else {
+                recordBtn.className = 'flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 flex items-center justify-center';
+                recordText.textContent = 'Start Recording';
+                recordIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>';
+                recordingStatus.classList.add('hidden');
+            }
+        }
+
+        function updateRecordingTime() {
+            if (recordingStartTime) {
+                const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                document.getElementById('recordingTime').textContent = 
+                    `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }
+
+        function clearRecording() {
+            currentAudioBlob = null;
+            document.getElementById('audioPlayerSection').classList.add('hidden');
+            document.getElementById('audioPlayer').src = '';
+            showNotification('Recording cleared', 'info');
+        }
+
+        async function handleAudioUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            // Check file size (50MB limit)
+            if (file.size > 50 * 1024 * 1024) {
+                showNotification('File size exceeds 50MB limit', 'error');
+                return;
+            }
+            
+            // Check file type
+            if (!file.type.startsWith('audio/')) {
+                showNotification('Please select an audio file', 'error');
+                return;
+            }
+            
+            currentAudioBlob = file;
+            const audioUrl = URL.createObjectURL(file);
+            
+            const audioPlayer = document.getElementById('audioPlayer');
+            audioPlayer.src = audioUrl;
+            
+            document.getElementById('audioPlayerSection').classList.remove('hidden');
+            showNotification('Audio file loaded successfully', 'success');
+        }
+
+        async function transcribeAudio() {
+            if (!currentAudioBlob) {
+                showNotification('No audio to transcribe', 'error');
+                return;
+            }
+            
+            const transcribeBtn = document.getElementById('transcribeBtn');
+            const transcribeText = document.getElementById('transcribeText');
+            const transcribeSpinner = document.getElementById('transcribeSpinner');
+            
+            // Update UI
+            transcribeBtn.disabled = true;
+            transcribeText.textContent = 'Transcribing...';
+            transcribeSpinner.classList.remove('hidden');
+            
+            try {
+                const formData = new FormData();
+                formData.append('audio_file', currentAudioBlob, 'recording.webm');
+                
+                const response = await fetch('/api/upload-audio', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update transcript textarea
+                const textarea = document.getElementById('transcript');
+                textarea.value = data.transcript;
+                updateWordCount();
+                
+                showNotification('Audio transcribed successfully!', 'success');
+                
+            } catch (error) {
+                console.error('Error transcribing audio:', error);
+                showNotification('Failed to transcribe audio. Please try again.', 'error');
+            } finally {
+                // Reset UI
+                transcribeBtn.disabled = false;
+                transcribeText.textContent = 'Transcribe Audio';
+                transcribeSpinner.classList.add('hidden');
+            }
+        }
+
+        async function transcribeAndAnalyze() {
+            if (!currentAudioBlob) {
+                showNotification('No audio to transcribe and analyze', 'error');
+                return;
+            }
+            
+            const transcribeAnalyzeBtn = document.getElementById('transcribeAnalyzeBtn');
+            const transcribeAnalyzeText = document.getElementById('transcribeAnalyzeText');
+            const transcribeAnalyzeSpinner = document.getElementById('transcribeAnalyzeSpinner');
+            
+            // Update UI
+            transcribeAnalyzeBtn.disabled = true;
+            transcribeAnalyzeText.textContent = 'Processing...';
+            transcribeAnalyzeSpinner.classList.remove('hidden');
+            
+            try {
+                const formData = new FormData();
+                formData.append('audio_file', currentAudioBlob, 'recording.webm');
+                
+                const response = await fetch('/api/upload-audio', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Update transcript textarea
+                const textarea = document.getElementById('transcript');
+                textarea.value = data.transcript;
+                updateWordCount();
+                
+                // Check if this is a duplicate detection response
+                if (data.is_duplicate) {
+                    showNotification('Identical content detected! Showing existing analysis instead of creating a duplicate.', 'info');
+                    displayResults(data.note, true);
+                } else {
+                    showNotification('Audio transcribed and analyzed successfully!', 'success');
+                    displayResults(data.note, false);
+                }
+                
+                loadSessionHistory();
+                
+            } catch (error) {
+                console.error('Error transcribing and analyzing audio:', error);
+                showNotification('Failed to transcribe and analyze audio. Please try again.', 'error');
+            } finally {
+                // Reset UI
+                transcribeAnalyzeBtn.disabled = false;
+                transcribeAnalyzeText.textContent = 'Transcribe & Analyze';
+                transcribeAnalyzeSpinner.classList.add('hidden');
+            }
         }
     </script>
 </body>
