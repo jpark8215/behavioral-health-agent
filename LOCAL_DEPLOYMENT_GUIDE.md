@@ -292,9 +292,6 @@ docker system prune -a
 
 * **README.md**: Project overview
 * **API Documentation**: [http://localhost:8001/api/docs](http://localhost:8001/api/docs)
-* **docs/API_IMPROVEMENTS.md**
-* **docs/QUICK_REFERENCE.md**
-* **CHANGELOG.md**
 
 ## Support
 
