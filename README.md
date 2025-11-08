@@ -483,7 +483,6 @@ Contributions are welcome! Please ensure:
 - Code passes all diagnostics
 - Documentation is updated
 - Security best practices followed
-- Tests are included where appropriate
 
 ---
 
