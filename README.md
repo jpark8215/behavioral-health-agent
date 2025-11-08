@@ -286,7 +286,7 @@ REDIS_PORT=6379                          # Default: 6379
 #### Ollama (Optional)
 ```bash
 OLLAMA_BASE_URL=http://host.docker.internal:11434  # Default
-OLLAMA_MODEL=qwen2.5:3b-instruct-q4_0              # Default model
+OLLAMA_MODEL=mistral:7b              # Default model
 ```
 
 #### Application
@@ -313,7 +313,7 @@ For enhanced AI-powered analysis:
 3. **Pull a model**
    ```bash
    # Smaller model (less memory, faster)
-   ollama pull qwen2.5:3b-instruct-q4_0
+   ollama pull mistral:7b
    
    # Larger model (more memory, better quality)
    ollama pull granite3.3:8b
@@ -322,7 +322,7 @@ For enhanced AI-powered analysis:
 4. **Update .env**
    ```bash
    OLLAMA_BASE_URL=http://host.docker.internal:11434
-   OLLAMA_MODEL=qwen2.5:3b-instruct-q4_0
+   OLLAMA_MODEL=mistral:7b
    ```
 
 **Note**: If Ollama is unavailable or runs out of memory, the system automatically uses rule-based analysis.

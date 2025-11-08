@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     
     # Ollama (Optional)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:3b-instruct-q4_0"
+    ollama_model: str = "mistral:7b"
     ollama_timeout: int = Field(default=120, ge=10, le=300)
     ollama_enabled: bool = True
     

@@ -47,7 +47,7 @@ class OllamaConfigService:
     
     def __init__(self):
         self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.default_model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b-instruct-q4_0")
+        self.default_model = os.getenv("OLLAMA_MODEL", "mistral:7b")
         self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "180"))
         
         # Connection pool settings

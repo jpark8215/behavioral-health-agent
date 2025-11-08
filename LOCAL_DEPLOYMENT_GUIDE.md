@@ -92,7 +92,7 @@ WHISPER_MODEL_SIZE=base  # Options: tiny, base, small, medium, large
 
 # Ollama Configuration (optional)
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=qwen2.5:3b-instruct-q4_0
+OLLAMA_MODEL=mistral:7b
 ```
 
 **Important**: Change `POSTGRES_PASSWORD` for production deployments!
@@ -334,7 +334,7 @@ curl -fsSL https://ollama.ai/install.sh | sh
 ollama serve
 
 # In another terminal, pull a model
-ollama pull qwen2.5:3b-instruct-q4_0
+ollama pull mistral:7b
 ```
 
 **Model recommendations**:
@@ -342,7 +342,7 @@ ollama pull qwen2.5:3b-instruct-q4_0
 | Model | RAM | Speed | Quality |
 |-------|-----|-------|---------|
 | qwen2.5:1.5b | 2GB | Fast | Good |
-| qwen2.5:3b-instruct-q4_0 | 4GB | Medium | Better |
+| mistral:7b | 4GB | Medium | Better |
 | granite3.3:8b | 8GB | Slow | Best |
 
 ### Configuring Application for Ollama
@@ -350,7 +350,7 @@ ollama pull qwen2.5:3b-instruct-q4_0
 **Update `.env`**:
 ```bash
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=qwen2.5:3b-instruct-q4_0
+OLLAMA_MODEL=mistral:7b
 ```
 
 **Restart application**:
