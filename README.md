@@ -163,13 +163,6 @@ docker-compose --profile tools up -d pgadmin
 | Full backup       | `pg_dump -U postgres postgres > backup.sql`                      |                       |
 | Table backup      | `pg_dump -U postgres -t sessions postgres > sessions_backup.sql` |                       |
 | Restore           | `psql -U postgres postgres < backup.sql`                         |                       |
-| Compressed backup | `pg_dump -U postgres postgres                                    | gzip > backup.sql.gz` |
-
-Automate with cron:
-
-```bash
-0 2 * * * cd /path/to/project && docker-compose exec postgres pg_dump -U postgres postgres | gzip > /backups/db_$(date +\%Y\%m\%d).sql.gz
-```
 
 ---
 
