@@ -34,7 +34,7 @@ Designed with healthcare compliance in mind, featuring audit logging, data sanit
 
 ## System Architecture
 
-```mermaid
+```
 flowchart TD
     A[Web Interface (FastAPI + Jinja2)] --> B[FastAPI Application]
     B --> C[Audio Service]
